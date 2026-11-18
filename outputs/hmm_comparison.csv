@@ -1,0 +1,7 @@
+Model,Classifier-Only Top-1 Acc,Classifier + HMM Top-1 Acc,Classifier Route Continuity,Classifier + HMM Route Continuity,Continuity Gain,Avg HMM Latency (ms/trip)
+Random Forest,0.8443,0.8803,90.6%,97.2%,+6.6%,2963.6
+LightGBM,0.8385,0.8772,90.6%,97.1%,+6.5%,2103.9
+Decision Tree,0.8408,0.8751,90.1%,97.1%,+7.0%,1669.4
+Logistic Regression,0.8397,0.8787,88.7%,97.9%,+9.2%,1458.4
+MLP,0.8352,0.8743,89.4%,97.1%,+7.8%,1257.4
+Tuned LightGBM,0.8252,0.877,89.4%,97.1%,+7.7%,1214.3

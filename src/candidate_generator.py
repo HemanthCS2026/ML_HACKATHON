@@ -185,6 +185,7 @@ class CandidateGenerator:
                     "candidate_arc_id": arc_id,
                     "rank": rank,
                     "dist_m": dist_m,
+                    "proj_r": proj_r,
                     "is_gt": is_label
                 })
 
