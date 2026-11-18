@@ -325,7 +325,7 @@ with tab4:
         if os.path.exists("outputs/hmm_comparison_plot.png"):
             st.image("outputs/hmm_comparison_plot.png", use_column_width=True, caption="Top-1 Accuracy & Route Continuity: Classifier-Only vs Classifier + HMM")
 
-        st.markdown("""
+        st.markdown(r"""
         #### Key Findings:
         1. **Elimination of Teleportation:** Classifier-only predictions select the spatially closest candidate independently at each second, frequently flipping between parallel roads. HMM Viterbi decoding penalizes topologically disconnected transitions, elevating route continuity to **~99%**.
         2. **Accuracy Enhancement:** In ambiguous situations (e.g. overpasses or highway splits), topological transition context corrects point errors, providing a net gain in observation Top-1 accuracy.
