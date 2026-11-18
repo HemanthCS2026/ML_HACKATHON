@@ -1,127 +1,129 @@
-# PathSnap: Technical Methodology, Algorithms & Accuracy Analysis
+# PathSnap: Methodology, Algorithms & Results
 
-**Project:** PathSnap — Distributed Map-Matching & Route Reconstruction  
 **Course:** UE24CS352A Machine Learning  
-**Institution:** Department of Computer Science & Engineering, PES University (RR Campus)  
+**Department:** Computer Science & Engineering, PES University (RR Campus)  
 **Authors:** Hemanth V, Praveen, Ajay T Naik, Akula Sainandan Royal  
 
 ---
 
-## 🗺️ 1. Project Overview & The Core Challenge
+## 1. Problem Context
 
-* **Objective:** Given a sequence of noisy GPS observations from a vehicle traveling across an urban road network, reconstruct the true trajectory by matching each observation to its true road segment (`arc_id`) and recovering a topologically continuous route.
-* **The Urban GPS Dilemma:** In real-world urban environments, GPS signals bounce off high-rise buildings (multipath reflections), experience satellite occlusion, and have low sampling frequencies (~1 Hz). A naive nearest-distance search causes vehicles to snap onto wrong parallel service roads, jump through buildings, or drive down one-way streets in reverse.
-* **Our Solution:** A rigorous two-stage architecture:
-  1. **Candidate Retrieval & Classification (Phase 1):** High-speed spatial candidate generation + supervised machine learning feature-based ranking.
-  2. **Sequential Decoding (Phase 2):** Hidden Markov Model (HMM) + Viterbi algorithm enforcing road-network topological graph continuity.
+GPS receivers in urban areas produce noisy coordinates. Tall buildings reflect signals (multipath error), overhead bridges cause blackouts, and cheap smartphone receivers have low sampling frequency (usually 1 Hz). 
 
----
+If you just find the closest road segment by Euclidean distance:
+1. Parallel roads get confused (service lanes vs main carriage roads)
+2. Direction is ignored (the car gets snapped to a one-way street going backward)
+3. Consecutive points jump randomly between disconnected streets, making the vehicle look like it is teleporting
 
-## ⚙️ 2. Data Preprocessing Pipeline
-
-### A. Geodesic Metric Projection
-* **The Problem:** Raw GPS observations and road network nodes are given in angular coordinates (Latitude, Longitude) on the WGS84 ellipsoid. Computing standard Euclidean distance in degrees ($\sqrt{\Delta \text{lat}^2 + \Delta \text{lon}^2}$) is mathematically invalid because $1^\circ$ of longitude shrinks as latitude increases ($\approx 111.14 \text{ km} \times \cos(\text{lat})$).
-* **Our Solution:** For each trip, we project all coordinates into local metric Cartesian coordinates $(x, y)$ in **meters**, centered at the trajectory's median:
-  $$\Delta x = (\text{lon} - \overline{\text{lon}}) \times 111139 \times \cos(\overline{\text{lat}})$$
-  $$\Delta y = (\text{lat} - \overline{\text{lat}}) \times 111139$$
-  This enables exact, physical Euclidean distance calculations in meters.
-
-### B. High-Speed Spatial Indexing (KD-Tree)
-* **The Problem:** Each trip's road network contains up to **307,000 directed road segments (arcs)**. Brute-force scanning all segments for 2,500 GPS points requires over $7.5 \times 10^8$ operations per trip, which is computationally prohibitive.
-* **Our Solution:** We construct a spatial `scipy.spatial.KDTree` over all road network vertices (`nodes`).
-* **Candidate Extraction:**
-  1. For each GPS point, we query the $K=20$ nearest road nodes in logarithmic time ($O(\log M)$).
-  2. We gather all directed arcs incident to these nodes.
-  3. We compute the exact orthogonal point-to-segment distance and clamp the projection to the segment endpoints $[0, 1]$.
-  4. We sort candidate segments by distance and retain the **Top-5 candidates** per observation.
-* **Result:** Our spatial indexing achieves a **Top-5 Candidate Recall of 96.51%** (a **Candidate Miss Rate of only 3.49%**), ensuring the true segment is almost always present in the candidate pool.
-
-### C. Feature Scaling
-* We fit a `StandardScaler` on the training dataset to normalize all features to zero mean ($\mu=0$) and unit variance ($\sigma^2=1$), ensuring neural networks and linear models converge without gradient instability.
+To fix this, we designed a two-step approach:
+- **Step 1 (Candidate Generation + ML Ranking):** Find candidate roads near each GPS ping and use a trained classifier to score them based on distance, heading, and speed.
+- **Step 2 (HMM Viterbi Route Reconstruction):** Take the sequence of candidates and find the most probable path through the road graph, enforcing that consecutive roads must actually connect.
 
 ---
 
-## 🧠 3. Feature Engineering Pipeline (8 Domain-Grounded Features)
+## 2. Preprocessing & Candidate Retrieval
 
-For every candidate segment $(u \to v)$ of a GPS observation $t$, we extract **8 features** capturing spatial proximity, kinematics, heading alignment, and geometry:
+### 2.1 Coordinate Projection
+Raw files give longitude and latitude in degrees. Since the Earth is curved, 1 degree of longitude is not the same physical distance as 1 degree of latitude (it shrinks by `cos(latitude)`). Calculating Euclidean distance directly in degrees gives stretched, inaccurate distances.
 
-| # | Feature Name | Mathematical Definition | Physical & Behavioral Rationale |
-| :-: | :--- | :--- | :--- |
-| **1** | **`dist_m`** | $\|\mathbf{p} - \mathbf{p}_{\text{proj}}\|$ | **Perpendicular distance (meters):** Vehicles drive on road surfaces; proximity is the primary spatial indicator. |
-| **2** | **`proj_ratio`** | $t_{\text{proj}} = \frac{(\mathbf{p} - \mathbf{a}) \cdot (\mathbf{b} - \mathbf{a})}{\|\mathbf{b} - \mathbf{a}\|^2} \in [0, 1]$ | **Projection ratio along the segment:** Values near 0 or 1 indicate the vehicle is near an intersection, while values around 0.5 indicate mid-block travel. Penalizes points that fall outside the link bounds. |
-| **3** | **`heading_diff_deg`** | $\|\theta_{\text{gps}} - \theta_{\text{arc}}\|$ (0° to 180°) | **Angular deviation:** Difference between the vehicle's movement vector ($t-1 \to t+1$) and the road segment's direction vector ($u \to v$). Resolves parallel streets with opposite directions. |
-| **4** | **`heading_alignment`** | $\cos(\Delta \theta) \in [-1, 1]$ | **Directional alignment:** Smooth continuous feature; $+1$ indicates perfect forward travel along the arc, while $-1$ heavily penalizes driving the wrong way down a one-way street. |
-| **5** | **`arc_len`** | $\|\mathbf{b} - \mathbf{a}\|$ (meters) | **Segment physical length:** Normalizes capture basins; long highway links naturally have wider observation basins than short turning links. |
-| **6** | **`speed_mps`** | $\frac{\Delta s}{\Delta t}$ (meters/second) | **Instantaneous velocity:** Distinguishes stationary vehicles at red lights from high-speed highway traffic, helping identify valid road types. |
-| **7** | **`spatial_prior`** | $\exp\left(-\frac{d^2}{2\sigma^2}\right)$ with $\sigma=6.0\text{m}$ | **Gaussian Sensor Emission Prior:** Standard physical GPS measurement error model (Newson & Krumm, 2009). Represents the physical probability that sensor noise would displace the reading by distance $d$. |
-| **8** | **`distance_rank`** | Ordinal rank $\in \{0, 1, 2, 3, 4\}$ | **Relative spatial ranking:** Prioritizes the nearest candidate among the 5 retrieved alternatives. |
+For each trip, we project coordinates into meters centered around the median position of the trip:
+- `dx = (lon - median_lon) * 111139.0 * cos(median_lat)`
+- `dy = (lat - median_lat) * 111139.0`
 
----
+This lets us work with standard meters for road lengths, vehicle speeds, and perpendicular offsets.
 
-## 🤖 4. The 5 Algorithms / Model Families Used
+### 2.2 KDTree Candidate Retrieval
+Some trips have over 30,000 road segments (`.arcs`). Checking every road segment for 2,500 GPS observations would mean 75 million distance checks per trip.
 
-We trained and benchmarked models from **5 completely distinct algorithmic families** on **254,170 candidate samples** using 3-fold cross-validation and evaluated them on the unseen **10 Student-Test trips**:
+Instead, we:
+1. Build a `scipy.spatial.KDTree` on all road vertices (`.nodes`) in metric space.
+2. For each GPS ping, query the 20 nearest nodes in `O(log N)` time.
+3. Collect all directed segments that touch these nodes.
+4. Calculate perpendicular distance to each segment, clamping the projection to `[0, 1]` so points don't project past segment endpoints.
+5. Keep the closest 5 candidates per GPS point.
 
-1. **Logistic Regression (Linear & Probabilistic Family):**
-   * *Configuration:* $C=1.0$, `class_weight='balanced'`, L-BFGS solver, `max_iter=1000`.
-   * *Role:* Provides a linear, highly interpretable baseline with calibrated probabilistic outputs.
-2. **Decision Tree Classifier (Tree-Based Family):**
-   * *Configuration:* `max_depth=10`, `min_samples_leaf=20`, `criterion='gini'`.
-   * *Role:* Hierarchical rule-based splitting; captures simple non-linear thresholds (e.g., `dist_m < 5m AND heading_alignment > 0.7`).
-3. **Random Forest Classifier (Ensemble Bagging Family):**
-   * *Configuration:* 100 estimators, `max_depth=12`, `class_weight='balanced'`.
-   * *Role:* Bootstrap aggregation across 100 de-correlated decision trees; cancels out individual tree variance and is resilient to random GPS spikes.
-4. **LightGBM (Gradient Boosting Family):**
-   * *Configuration:* 150 trees, `learning_rate=0.05`, `num_leaves=31`, `class_weight='balanced'`.
-   * *Role:* Sequential boosting that iteratively focuses on hard-to-classify edge cases (e.g., overpasses, highway forks, and dense junctions).
-5. **Multi-Layer Perceptron (Neural Network Family):**
-   * *Configuration:* Two hidden layers `(64, 32)`, ReLU activation, Adam optimizer, early stopping on validation loss.
-   * *Role:* Learns continuous non-linear latent feature interactions between spatial distance, heading, and velocity.
+Across the entire dataset, our Top-5 recall is **96.51%** (Candidate Miss Rate is only **3.49%**).
 
 ---
 
-## 📊 5. Benchmark Leaderboard & Accuracy Breakdown
+## 3. Feature Engineering
 
-Official measured performance across all 10 Student-Test trips:
+For each candidate road segment, we compute 8 features:
 
-| Model | Algorithm Family | CV Macro F1 | CV Top-1 Acc | Test Top-1 Acc | Test Macro F1 | Log Loss | Route Continuity | Inference Latency |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Logistic Regression** | Linear & Probabilistic | 0.7975 | 83.15% | **83.97%** | 0.8185 | 0.2987 | 88.7% | **0.002 ms** |
-| **Decision Tree** | Tree-Based | 0.8237 | 86.09% | **84.08%** | 0.8406 | 0.2502 | 90.1% | **0.002 ms** |
-| **Random Forest** | Ensemble Bagging | 0.8361 | 86.56% | **84.43% 🏆** | 0.8483 | 0.2249 | **90.6% 🏆** | 0.056 ms |
-| **LightGBM** | Gradient Boosting | 0.8391 | **87.64% 🏆** | **83.85%** | 0.8447 | 0.2276 | **90.6% 🏆** | 0.039 ms |
-| **Multi-Layer Perceptron** | Neural Networks | **0.8489 🏆** | 85.78% | **83.52%** | **0.8866 🏆** | **0.1744 🏆** | 89.4% | 0.006 ms |
+| Feature | Description | Why it helps |
+| :--- | :--- | :--- |
+| `dist_m` | Distance from GPS point to the segment (meters) | Primary check: cars drive on roads, so true segment is usually close. |
+| `proj_ratio` | Value in `[0, 1]` showing where along the segment the point lands | Values near 0 or 1 mean the car is near an intersection; values outside `[0, 1]` are penalized. |
+| `heading_diff_deg` | Angle between car movement and road direction (0 to 180 degrees) | Tells apart parallel roads going in opposite directions. |
+| `heading_align` | Cosine of heading difference (`cos(theta)` between -1 and +1) | Smooth indicator: +1 means travelling along the road, -1 means wrong-way. |
+| `arc_len` | Length of the road segment in meters | Normalizes capture zone: longer highway links catch points differently than short intersection links. |
+| `speed_mps` | Instantaneous GPS speed (meters per second) | Helps separate stopped cars (red lights) from moving traffic. |
+| `spatial_prior` | Gaussian density `exp(-dist^2 / (2 * sigma^2))` with `sigma = 6m` | Sensor noise model from Newson & Krumm (2009). |
+| `distance_rank` | Rank among the 5 candidates (0 for closest, 4 for furthest) | Relative local ordering. |
 
----
-
-### 🔍 Why Did Accuracy Differ Across Methods?
-
-#### 1. Why Did Random Forest & LightGBM Achieve the Highest Accuracy (84.4%) and Route Continuity (90.6%)?
-* **Orthogonal Decision Boundaries:** Spatial map matching fundamentally relies on bounding box checks and directional thresholds (e.g., *"Is the distance less than 8 meters AND is the heading aligned within 30 degrees?"*). Tree ensembles excel at creating rectangular decision regions in feature space.
-* **Resistance to GPS Outliers:** In Random Forest, aggregating predictions across 100 independently bootstrapped trees prevents occasional massive GPS noise spikes from corrupting the prediction.
-* **LightGBM's High CV Score (87.64%):** LightGBM achieved the highest CV score because gradient boosting sequentially targets the hardest samples (ambiguous parallel links).
-
-#### 2. Why Did MLP Win on Macro F1 (0.8866) and Log Loss (0.1744)?
-* **Log Loss measures probabilistic certainty**, not just binary hard decisions. 
-* The Multi-Layer Perceptron outputs smoothly calibrated posterior probabilities ($P(y=1|x)$). While its hard Top-1 accuracy was 83.52%, its predicted probabilities were the most confident and numerically accurate across the dataset.
-* **Why this matters:** In Phase 2, the **Hidden Markov Model (HMM)** directly ingests these probabilities as *emission probabilities*. The MLP's low log loss makes it an outstanding emission generator for the sequential decoder!
-
-#### 3. Why Did Logistic Regression Score Lowest (83.15% CV / 83.97% Test)?
-* **Linear Underfitting:** A linear model separates classes using a single hyperplane:
-  $$z = w_1 \cdot \text{dist} + w_2 \cdot \text{heading} + \dots + b$$
-* In map matching, heading and distance have a **coupled non-linear relationship** (a large heading difference is fatal at close distances, but less informative when a vehicle is stationary at a traffic light). A linear model cannot model this interaction without explicit polynomial interaction terms, resulting in slight underfitting.
+Features are standardized with `StandardScaler` fitted on the training split only (no data leakage).
 
 ---
 
-## 🚨 6. The Crucial Viva Question: Why is Observation Top-1 Accuracy Not Enough?
+## 4. Model Training & Comparison
 
-Evaluators will ask: *"You got 84.4% observation accuracy. Why can't you stop here? Why do you need HMM/Viterbi?"*
+We implemented 5 models from 5 different algorithm families to compare their behavior on this data:
 
-### The Answer (Observation Accuracy vs. Route Continuity):
-* **Observation-Level Top-1 Accuracy** evaluates each GPS ping **independently in isolation**.
-* If ping $t$ is snapped to Road Segment $A$, and ping $t+1$ is snapped to Road Segment $B$, Segment $A$ and Segment $B$ might be 2 meters apart in physical space, but **topologically disconnected in the road network graph** (e.g., an elevated highway overpass vs. a ground-level service road).
-* When you inspect the predicted route, the vehicle appears to **teleport across roads**.
-* Our baseline models already reach **90.6% Route Continuity natively**. 
-* **The Phase 2 Bridge:** The remaining **9.4% discontinuity** proves why **Sequential HMM + Viterbi decoding** is mathematically required:
-  * HMM uses **Emission Probabilities** (from our ML model) to see how well an arc matches the GPS point.
-  * HMM uses **Transition Probabilities** (from the road network graph) to enforce that consecutive arcs must share an edge in the road graph, eliminating all disconnected hops and driving route continuity toward **100%**.
+1. **Logistic Regression (Linear / Probabilistic):** L-BFGS solver, `class_weight='balanced'`. Fast baseline, gives probabilistic outputs.
+2. **Decision Tree (Tree-based):** `max_depth=10`, `min_samples_leaf=20`. Simple if-else decision boundaries on distance and heading.
+3. **Random Forest (Ensemble / Bagging):** 100 trees, `max_depth=12`. Averages multiple trees, resistant to random GPS spikes.
+4. **LightGBM (Boosting):** 150 estimators, `learning_rate=0.05`, `num_leaves=31`. Builds trees sequentially to fix previous errors.
+5. **Multi-Layer Perceptron (Neural Network):** Hidden layers `(64, 32)`, ReLU, Adam optimizer, early stopping. Captures smooth non-linear feature combinations.
+
+### Benchmark Results (10 Student-Test Trips)
+
+| Model | CV Macro F1 | CV Top-1 Acc | Test Top-1 Acc | Test Macro F1 | Log Loss | Route Continuity | Latency |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| Logistic Regression | 0.7975 | 83.15% | 83.97% | 0.8185 | 0.2987 | 88.7% | 0.002 ms |
+| Decision Tree | 0.8237 | 86.09% | 84.08% | 0.8406 | 0.2502 | 90.1% | 0.002 ms |
+| Random Forest | 0.8361 | 86.56% | **84.43%** | 0.8483 | 0.2249 | **90.6%** | 0.056 ms |
+| LightGBM | 0.8391 | **87.64%** | 83.85% | 0.8447 | 0.2276 | **90.6%** | 0.039 ms |
+| Multi-Layer Perceptron | **0.8489** | 85.78% | 83.52% | **0.8866** | **0.1744** | 89.4% | 0.006 ms |
+
+### Observations:
+- **Random Forest & LightGBM** achieved the best Top-1 test accuracy (84.4%) and highest route continuity (90.6%). Tree splits fit spatial threshold rules well (e.g., `dist < 7m` AND `heading_align > 0.6`).
+- **MLP** had the lowest log loss (0.1744) and highest Macro F1 (0.8866). Its probability outputs are smoothly calibrated, making it a strong candidate for HMM emission probabilities.
+- **Logistic Regression** slightly underperformed because distance and heading interact non-linearly, which a single linear hyperplane cannot completely separate.
+
+---
+
+## 5. Bayesian Hyperparameter Tuning
+
+We ran Bayesian optimization using **Optuna (TPE sampler)** over 25 trials on LightGBM:
+- Objective: 3-fold CV Macro F1 on the training split.
+- Parameters tuned: `n_estimators`, `learning_rate` (log-uniform), `num_leaves`, `max_depth`, `min_child_samples`, `subsample`, `colsample_bytree`.
+
+### Result:
+- Untuned LightGBM: CV F1 = 0.8391, Test Top-1 Acc = 83.85%
+- Tuned LightGBM: **CV F1 = 0.8590**, Test Top-1 Acc = 82.52%
+
+The tuned model achieved higher CV F1 (+0.02) and higher test Macro F1 (0.8488 vs 0.8447), but slightly lower Top-1 accuracy due to slight overfitting to training folds. We retained both models in `artifacts/`.
+
+---
+
+## 6. HMM & Viterbi Sequential Decoding
+
+Pointwise classifiers make decisions for each second in isolation. Even at 84.4% accuracy, ~10% of transitions jump between roads that do not connect in the road network.
+
+To resolve this, we implemented a Hidden Markov Model:
+- **Hidden states:** The candidate road segments at each time step.
+- **Emission probability:** Combines the classifier's predicted probability with the Gaussian sensor distance prior:
+  `log P(emission) = alpha * log(P_model) + (1 - alpha) * (-dist^2 / (2 * sigma^2))`
+- **Transition probability:** Compares the actual shortest path distance in the road network graph against the straight-line GPS movement:
+  `P(transition) = (1 / beta) * exp(-|d_network - d_gps| / beta)`
+  If two candidates share a node or are on the same road, transition probability is high. If they are disconnected, a penalty is applied.
+- **GPS Gaps:** When timestamps show a gap > 10 seconds, the transition penalty is relaxed so the model does not force an impossible connection.
+- **Viterbi Algorithm:** Runs dynamic programming to find the sequence of road segments that maximizes total log probability over the entire trip.
+
+### HMM Test Results (All 10 Student-Test Trips):
+- **Classifier-Only Avg Continuity:** 90.62%
+- **Classifier + HMM Avg Continuity:** **97.23% (+6.61% gain)**
+- **Classifier-Only Avg Top-1 Accuracy:** 86.54%
+- **Classifier + HMM Avg Top-1 Accuracy:** **89.66% (+3.12% gain)**
+
+The HMM eliminates almost all disconnected hops while simultaneously correcting ambiguous candidate predictions near intersections.
