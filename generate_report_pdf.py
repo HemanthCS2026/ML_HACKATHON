@@ -381,7 +381,6 @@ def build_pdf_report(output_filename="PathSnap_Technical_Report.pdf"):
     # =========================================================
     # SECTION 5: HMM AND VITERBI ROUTE RECONSTRUCTION
     # =========================================================
-    story.append(PageBreak())
     story.append(Paragraph("5. HMM and Viterbi Route Reconstruction", h1_style))
     story.append(Paragraph(
         "<b>Theoretical Formulation & Architectural Implementation:</b><br/>"
@@ -443,7 +442,6 @@ def build_pdf_report(output_filename="PathSnap_Technical_Report.pdf"):
     # =========================================================
     # SECTION 6: GEOGRAPHICAL VISUALISATION USING FOLIUM
     # =========================================================
-    story.append(PageBreak())
     story.append(Paragraph("6. Geographical Visualisation Using Folium", h1_style))
     story.append(Paragraph(
         "Folium interactive maps were generated for all evaluation trips with standard 4-layer cartographic separation: "
@@ -460,6 +458,12 @@ def build_pdf_report(output_filename="PathSnap_Technical_Report.pdf"):
         "perfectly matching the green ground-truth route and completely eliminating disconnected visual spikes.",
         body_style
     ))
+
+    if os.path.exists("outputs/folium_map_screenshot.png"):
+        story.append(Spacer(1, 4))
+        story.append(Image("outputs/folium_map_screenshot.png", width=6.8 * inch, height=3.4 * inch))
+        story.append(Paragraph("<b>Figure 5:</b> High-Resolution Geographical Route Reconstruction Visualization (Trip #00000000). Visualizes raw GPS points, local road network arcs, reference ground truth path, and predicted trajectory.", meta_style))
+        story.append(Spacer(1, 8))
 
     # =========================================================
     # SECTION 7: API, UI & TWO-LAPTOP DEPLOYMENT
