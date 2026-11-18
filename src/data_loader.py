@@ -12,7 +12,12 @@ def list_trips(split="train", base_dir=None):
         base_dir = get_base_dir()
     split_dir = os.path.join(base_dir, split)
     if not os.path.exists(split_dir):
-        raise FileNotFoundError(f"Split directory not found: {split_dir}")
+        # Fallback for evaluator_test located in root evaluator_test folder
+        root_alt = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "evaluator_test", "evaluator_test")
+        if os.path.exists(root_alt):
+            split_dir = root_alt
+        else:
+            raise FileNotFoundError(f"Split directory not found: {split_dir}")
     return sorted(os.listdir(split_dir))
 
 def load_trip(trip_id, split="train", base_dir=None):
@@ -35,6 +40,10 @@ def load_trip(trip_id, split="train", base_dir=None):
     if base_dir is None:
         base_dir = get_base_dir()
     tdir = os.path.join(base_dir, split, trip_id)
+    if not os.path.exists(tdir):
+        root_alt = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "evaluator_test", "evaluator_test", trip_id)
+        if os.path.exists(root_alt):
+            tdir = root_alt
     
     # Track: lon, lat, timestamp
     track_path = os.path.join(tdir, f"{trip_id}.track")

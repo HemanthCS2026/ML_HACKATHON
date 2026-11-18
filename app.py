@@ -74,17 +74,19 @@ if deploy_mode == "API Client (Two-Laptop / LAN)":
 st.sidebar.markdown("---")
 st.sidebar.header("⚙️ Evaluation Parameters")
 
-# Load available trips
+# Partition selection: default to evaluator_test
+partition_options = ["evaluator_test", "student_test", "train"]
+split_option = st.sidebar.selectbox("Dataset Partition", partition_options, index=0)
+
+# Load available trips for selected partition
 if api_connected:
     try:
-        resp = requests.get(f"{api_url}/trips?split=student_test", timeout=3.0)
-        available_trips = resp.json().get("trips", [])
-        split_option = "student_test"
+        resp = requests.get(f"{api_url}/trips?split={split_option}", timeout=3.0)
+        data = resp.json()
+        available_trips = data.get("trips") or data.get("trip_ids", [])
     except Exception:
-        available_trips = list_trips(split="student_test")
-        split_option = "student_test"
+        available_trips = list_trips(split=split_option)
 else:
-    split_option = st.sidebar.selectbox("Dataset Partition", ["student_test", "train"], index=0)
     available_trips = list_trips(split=split_option)
 
 selected_trip_id = st.sidebar.selectbox("Select Evaluation Trip ID", available_trips, index=0)
@@ -154,14 +156,18 @@ with tab1:
 
                     if resp.status_code == 200:
                         data = resp.json()
-                        metrics = data["metrics"]
-                        pred_arcs = data["predicted_route"]
+                        metrics = data.get("metrics", {})
+                        pred_arcs = data.get("predicted_route") or data.get("predicted_arc_ids", [])
+                        top1 = metrics.get("top1_accuracy", data.get("observation_top1_accuracy"))
+                        cont = metrics.get("route_continuity", data.get("route_continuity_pct"))
+                        miss = metrics.get("candidate_miss_rate", data.get("candidate_miss_rate"))
+                        lat = metrics.get("latency_ms", data.get("inference_time_ms", client_roundtrip_ms))
 
                         m1, m2, m3, m4 = st.columns(4)
-                        m1.metric("Top-1 Observation Accuracy", f"{metrics['top1_accuracy']}%" if metrics['top1_accuracy'] is not None else "Server Protected")
-                        m2.metric("Route Continuity", f"{metrics['route_continuity']}%")
-                        m3.metric("Candidate Miss Rate", f"{metrics['candidate_miss_rate']}%")
-                        m4.metric("API Response Latency", f"{metrics['latency_ms']:.1f} ms", f"{client_roundtrip_ms:.1f} ms total")
+                        m1.metric("Top-1 Observation Accuracy", f"{top1}%" if top1 is not None else "Server Protected")
+                        m2.metric("Route Continuity", f"{cont}%")
+                        m3.metric("Candidate Miss Rate", f"{miss}%")
+                        m4.metric("API Response Latency", f"{lat:.1f} ms", f"{client_roundtrip_ms:.1f} ms total")
 
                         # Generate Interactive Map with predictions
                         map_path = f"maps/live_trip_{selected_trip_id}.html"

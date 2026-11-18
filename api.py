@@ -114,7 +114,8 @@ def get_trips(split: str = Query("student_test", description="Dataset partition:
         return {
             "split": split,
             "count": len(trips),
-            "trip_ids": trips
+            "trip_ids": trips,
+            "trips": trips
         }
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
